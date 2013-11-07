@@ -19,6 +19,7 @@ end
 
 require "optparse"
 require "io/console"
+require 'strscan'
 
 KEY_CTRL_C = ?\C-c
 KEY_CTRL_N = ?\C-n
@@ -202,7 +203,7 @@ class Search
 
   def matches
     @choices.map do |choice|
-      [choice, Respecta.new(choice).score(query)]
+      [choice, Score.score(choice, query)]
     end.select do |choice, score|
       score > 0.0
     end.sort_by do |choice, score|
@@ -218,8 +219,12 @@ class Search
 end
 
 
-class Respecta
+class Score
   attr_reader :haystack
+
+  def self.score(choice, query)
+    new(choice).score(query)
+  end
 
   # text - the text to be searched
   def initialize(text)
@@ -241,20 +246,6 @@ class Respecta
   private
 
   # Returns all the locations in `haystack` where the `needle` matches.
-  #
-  # Examples:
-  #
-  #     match_locations('hello world', 'l')   -> [ [2], [3], [9] ]
-  #     match_locations('hello world', 'lo')  -> [ [2,4], [2,7], [3,4], [3,7] ]
-  #     match_locations('hello world', 'lod') -> [ [2,4,10], [2,7,10], [3,4,10], [3,7,10] ]
-  #     match_locations('hello world', 'z')   -> [ [] ]
-  #
-  # This is the only non-trivial part of Respecta ;)
-  #
-  # This can be achieved in a number of ways and is potentially a hotspot.
-  # The implementation below is the fastest I know of:
-  #
-  # - http://lists.lrug.org/pipermail/chat-lrug.org/2013-October/009583.html
   def match_locations(haystack, needles)
     indices = Hash[haystack.
                    each_char.
@@ -262,11 +253,11 @@ class Respecta
                    group_by { |(char, _)| char }.
                    map { |(char, values)| [char, values.map { |(_, index)| index }] }]
 
-    return [[]] unless indices[needles[0]]
+    return [] unless indices[needles[0]]
     results = indices[needles[0]].map { |i| [i] }
     needles[1..-1].each_char do |char|
       results = results.flat_map do |r|
-        return [[]] unless indices[char]
+        return [] unless indices[char]
         indices[char].drop_while { |i| i < r.last }.map { |i| r + [i] }
       end
     end
@@ -277,8 +268,8 @@ end
 
 class Haystack
   DEFAULT_LETTER_SCORE    = 1
-  START_OF_WORD_BONUS     = 1
-  CONTIGUOUS_LETTER_BONUS = 1
+  START_OF_WORD_BONUS     = 3
+  CONTIGUOUS_LETTER_BONUS = 2
 
   attr_reader :text
 
@@ -320,11 +311,21 @@ class Haystack
       # every letter starts with a default score
       scores = Array.new text.length, DEFAULT_LETTER_SCORE
 
-      # first letter of each "word" gets a bonus
-      text.chars.each_with_index do |c, i|
-        if i == 0 || text[i - 1] =~ /[^a-zA-Z0-9]/ || c =~ /[A-Z]/
-          scores[i] += START_OF_WORD_BONUS
-        end
+      # first letter of each "word" gets a bonus:
+
+      # start of string
+      scores[0] += START_OF_WORD_BONUS
+
+      # words start after a non-word character
+      ss = StringScanner.new text
+      while ss.scan_until /[^a-zA-Z0-9]/
+        scores[ss.pos] += START_OF_WORD_BONUS if ss.pos < text.length
+      end
+
+      # words start with a capital letter
+      ss.reset
+      while ss.scan_until /[A-Z]/
+        scores[ss.pos - 1] += START_OF_WORD_BONUS
       end
 
       scores
